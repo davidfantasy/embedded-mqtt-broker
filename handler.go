@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sync"
 
-	"embedded.mqtt.broker/client"
-	"embedded.mqtt.broker/logger"
-	"embedded.mqtt.broker/packets"
+	"github.com/davidfantasy/embedded-mqtt-broker/client"
+	"github.com/davidfantasy/embedded-mqtt-broker/logger"
+	"github.com/davidfantasy/embedded-mqtt-broker/packets"
 )
 
 type MessageHandler struct {

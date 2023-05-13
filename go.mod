@@ -1,4 +1,4 @@
-module embedded.mqtt.broker
+module github.com/davidfantasy/embedded-mqtt-broker
 
 go 1.18
 

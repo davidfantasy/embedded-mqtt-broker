@@ -4,7 +4,7 @@
 # 启动方式
 
 ```go
-import mqtt "embedded.mqtt.broker"
+import mqtt "github.com/davidfantasy/embedded-mqtt-broker"
 
 func main() {
 	config := mqtt.NewServerOptions()

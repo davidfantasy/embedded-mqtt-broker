@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"embedded.mqtt.broker/logger"
-	"embedded.mqtt.broker/packets"
+	"github.com/davidfantasy/embedded-mqtt-broker/logger"
+	"github.com/davidfantasy/embedded-mqtt-broker/packets"
 )
 
 const (
