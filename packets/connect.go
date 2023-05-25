@@ -113,3 +113,31 @@ func (cp *ConnectPacket) String() string {
 	}
 	return fmt.Sprintf("ConnectPacket: %s protocolversion: %d protocolname: %s cleansession: %t willflag: %t WillQos: %d WillRetain: %t Usernameflag: %t Passwordflag: %t keepalive: %d clientId: %s willtopic: %s willmessage: %s Username: %s Password: %s", cp.FixedHeader, cp.ProtocolVersion, cp.ProtocolName, cp.CleanSession, cp.WillFlag, cp.WillQos, cp.WillRetain, cp.UsernameFlag, cp.PasswordFlag, cp.Keepalive, cp.ClientId, cp.WillTopic, cp.WillMessage, cp.Username, password)
 }
+
+// Validate performs validation of the fields of a Connect packet
+func (c *ConnectPacket) Validate() byte {
+	if c.PasswordFlag && !c.UsernameFlag {
+		return ErrRefusedBadUsernameOrPassword
+	}
+	if c.ReservedBit != 0 {
+		// Bad reserved bit
+		return ErrProtocolViolation
+	}
+	if (c.ProtocolName == "MQIsdp" && c.ProtocolVersion != 3) || (c.ProtocolName == "MQTT" && c.ProtocolVersion != 4) {
+		// Mismatched or unsupported protocol version
+		return ErrRefusedBadProtocolVersion
+	}
+	if c.ProtocolName != "MQIsdp" && c.ProtocolName != "MQTT" {
+		// Bad protocol name
+		return ErrProtocolViolation
+	}
+	if len(c.ClientId) > 65535 || len(c.Username) > 65535 || len(c.Password) > 65535 {
+		// Bad size field
+		return ErrProtocolViolation
+	}
+	if len(c.ClientId) == 0 && !c.CleanSession {
+		// Bad client identifier
+		return ErrRefusedIDRejected
+	}
+	return Accepted
+}

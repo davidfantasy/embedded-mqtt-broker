@@ -10,6 +10,7 @@ import (
 	"github.com/davidfantasy/embedded-mqtt-broker/client"
 	"github.com/davidfantasy/embedded-mqtt-broker/logger"
 	"github.com/davidfantasy/embedded-mqtt-broker/packets"
+	"github.com/davidfantasy/embedded-mqtt-broker/security"
 )
 
 var clientMap sync.Map
@@ -20,11 +21,16 @@ type ServerOptions struct {
 }
 
 type MqttServer struct {
-	opt *ServerOptions
+	opt                    *ServerOptions
+	authenticationProvider security.AuthenticationProvider
 }
 
 func NewMqttServer(opt *ServerOptions) *MqttServer {
-	return &MqttServer{opt}
+	return &MqttServer{opt: opt}
+}
+
+func (server *MqttServer) SetAuthProvider(authProvider security.AuthenticationProvider) {
+	server.authenticationProvider = authProvider
 }
 
 func NewServerOptions() *ServerOptions {
@@ -45,11 +51,11 @@ func (s *MqttServer) Startup() {
 			logger.ERROR.Println("Accept client connection failed:", err)
 			continue
 		}
-		go processNewConn(conn)
+		go processNewConn(conn, s)
 	}
 }
 
-func processNewConn(conn net.Conn) {
+func processNewConn(conn net.Conn, server *MqttServer) {
 	defer func() {
 		if err := recover(); err != nil {
 			s := string(debug.Stack())
@@ -58,7 +64,7 @@ func processNewConn(conn net.Conn) {
 		conn.Close()
 	}()
 	//mqtt connect handshake
-	client, err := acceptMqttConnect(conn)
+	client, err := acceptMqttConnect(conn, server)
 	if err != nil {
 		logger.ERROR.Println("mqtt connect err:", err)
 		conn.Close()
@@ -75,7 +81,7 @@ func processNewConn(conn net.Conn) {
 	client.Disconnect()
 }
 
-func acceptMqttConnect(conn net.Conn) (*client.Client, error) {
+func acceptMqttConnect(conn net.Conn, server *MqttServer) (*client.Client, error) {
 	//设置读取超时时间，如果超时时间内还没有收到connect的包，则返回错误
 	err := conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if err != nil {
@@ -97,14 +103,27 @@ func acceptMqttConnect(conn net.Conn) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	//验证连接报文
+	var returnCode byte = cp.Validate()
+	var authentication *security.Authentication
+	if returnCode == packets.Accepted {
+		//验证用户权限
+		if server.authenticationProvider != nil {
+			authProvider := server.authenticationProvider
+			authentication = authProvider.Authenticate(cp.Username, string(cp.Password))
+			if authentication == nil {
+				returnCode = packets.ErrRefusedBadUsernameOrPassword
+			}
+		}
+	}
 	cap := packets.NewMqttPacket(packets.Connack).(*packets.ConnackPacket)
 	//TODO:暂不支持会话保持
 	cap.SessionPresent = false
-	cap.ReturnCode = 0
+	cap.ReturnCode = returnCode
 	err = cap.Write(conn)
 	if err != nil {
 		return nil, err
 	}
-	client := client.NewClient(cp, conn)
+	client := client.NewClient(cp, conn, authentication)
 	return client, nil
 }

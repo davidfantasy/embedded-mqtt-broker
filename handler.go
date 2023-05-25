@@ -50,6 +50,9 @@ func (handler *MessageHandler) doForward() {
 }
 
 func (handler *MessageHandler) handlePublish(packet *packets.PublishPacket) error {
+	if !handler.client.CanPub(packet.TopicName) {
+		return nil
+	}
 	select {
 	case handler.publishMsgChan <- packet:
 	default:
@@ -101,9 +104,14 @@ func (handler *MessageHandler) handleSubscribe(packet *packets.SubscribePacket) 
 	suback.MessageID = packet.MessageID
 	suback.ReturnCodes = make([]byte, len(packet.Topics))
 	for i, topic := range packet.Topics {
-		Subscribe(topic, handler.client.Id)
-		//TODO 目前仅支持qos为0的订阅
-		suback.ReturnCodes[i] = 0x00
+		if handler.client.CanSub(topic) {
+			Subscribe(topic, handler.client.Id)
+			//TODO 目前仅支持qos为0的订阅
+			suback.ReturnCodes[i] = 0x00
+		} else {
+			//无订阅权限
+			suback.ReturnCodes[i] = 0x80
+		}
 	}
 	return suback.Write(handler.client.Conn)
 }

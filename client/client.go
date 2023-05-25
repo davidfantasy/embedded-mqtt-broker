@@ -7,6 +7,7 @@ import (
 
 	"github.com/davidfantasy/embedded-mqtt-broker/logger"
 	"github.com/davidfantasy/embedded-mqtt-broker/packets"
+	"github.com/davidfantasy/embedded-mqtt-broker/security"
 )
 
 const (
@@ -17,20 +18,24 @@ const (
 )
 
 type Client struct {
-	Id            string
-	status        int
-	statusMutex   sync.Mutex
-	Conn          net.Conn
-	LastPingTime  time.Time
-	ConnectedTime time.Time
-	Keepalive     uint16
-	pingChan      chan struct{}
+	Id             string
+	status         int
+	statusMutex    sync.Mutex
+	Conn           net.Conn
+	authentication *security.Authentication
+	LastPingTime   time.Time
+	ConnectedTime  time.Time
+	Keepalive      uint16
+	pingChan       chan struct{}
+	pubAuthMap     map[string]bool
 }
 
-func NewClient(cp *packets.ConnectPacket, conn net.Conn) *Client {
+func NewClient(cp *packets.ConnectPacket, conn net.Conn, authentication *security.Authentication) *Client {
 	logger.DEBUG.Println("新客户端连接头为：%s", cp.String())
 	client := &Client{Id: cp.ClientId, ConnectedTime: time.Now(), status: Connected, Conn: conn, Keepalive: cp.Keepalive}
 	client.pingChan = make(chan struct{})
+	client.authentication = authentication
+	client.pubAuthMap = make(map[string]bool)
 	if client.Keepalive != 0 {
 		client.checKeepalive()
 	}
@@ -46,6 +51,28 @@ func (client *Client) IsConnected() bool {
 func (client *Client) Touch() {
 	if client.Keepalive != 0 {
 		client.pingChan <- struct{}{}
+	}
+}
+
+func (client *Client) CanSub(topic string) bool {
+	if client.authentication == nil {
+		return true
+	} else {
+		return client.authentication.CanSub(topic)
+	}
+}
+
+//该方法会对pubAuthMap进行读写，需要确保非并发调用（使用map是为了提高性能）
+func (client *Client) CanPub(topic string) bool {
+	if client.authentication == nil {
+		return true
+	} else {
+		can, ok := client.pubAuthMap[topic]
+		if !ok {
+			can = client.authentication.CanPub(topic)
+			client.pubAuthMap[topic] = can
+		}
+		return can
 	}
 }
 

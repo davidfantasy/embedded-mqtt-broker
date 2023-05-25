@@ -3,54 +3,32 @@ package mqtt
 import (
 	"strings"
 	"sync"
+
+	"github.com/davidfantasy/embedded-mqtt-broker/consts"
+	"github.com/davidfantasy/embedded-mqtt-broker/trie"
 )
-
-const MULTI_WILDCARD = "#"
-
-const SINGLE_WILDCARD = "+"
-
-const TOPIC_PART_SPLITTER = "/"
-
-type TopicTrie struct {
-	isEnded  bool
-	value    string
-	level    int
-	parent   *TopicTrie
-	children map[string]*TopicTrie
-	clients  map[string]interface{}
-	topic    string
-}
 
 var subscribeMu sync.Mutex
 
 //所有已订阅topic构成的前缀树，注意第一级节点为根节点，不保存实际的topic值
-var subscribedTopics *TopicTrie = &TopicTrie{value: "$root"}
+var subscribedTopics *trie.TopicTrie = trie.NewRootTopicTrie()
 
-var clientTopicMap map[string][]*TopicTrie = make(map[string][]*TopicTrie)
+var clientTopicMap map[string][]string = make(map[string][]string)
+var topicClientMap map[string][]string = make(map[string][]string)
 
 func Subscribe(topic string, clientId string) {
 	if len(topic) == 0 || len(clientId) == 0 {
 		return
 	}
-	parts := strings.Split(topic, TOPIC_PART_SPLITTER)
+	parts := strings.Split(topic, consts.TOPIC_PART_SPLITTER)
 	subscribeMu.Lock()
 	defer subscribeMu.Unlock()
 	//已经订阅了则不再处理
 	if hasSubscribed(topic, clientId) {
 		return
 	}
-	trie := subscribedTopics.searchPrefix(parts)
-	//当前topic还没有被添加的部分
-	lackLen := len(parts) - trie.level
-	//说明该topic节点已经存在了，只需要修改节点信息就行了
-	if lackLen == 0 {
-		trie.isEnded = true
-		bindTrieAndClient(clientId, topic, trie)
-	} else {
-		//否则添加节点
-		cur := trie.insert(parts[trie.level:])
-		bindTrieAndClient(clientId, topic, cur)
-	}
+	subscribedTopics.Insert(parts, "")
+	bindTopicAndClient(clientId, topic)
 }
 
 //找到某个topic的所有订阅者
@@ -58,17 +36,19 @@ func GetSubscriber(topic string) []string {
 	if len(topic) == 0 {
 		return nil
 	}
-	parts := strings.Split(topic, TOPIC_PART_SPLITTER)
+	parts := strings.Split(topic, consts.TOPIC_PART_SPLITTER)
 	subscribeMu.Lock()
 	defer subscribeMu.Unlock()
-	tries := subscribedTopics.searchUseWildcard(parts)
+	tries := subscribedTopics.MatchMany(parts)
 	var clients map[string]interface{} = make(map[string]interface{})
 	var clientsSlice []string
 	for _, t := range tries {
-		for k := range t.clients {
-			if _, ok := clients[k]; !ok {
-				clients[k] = struct{}{}
-				clientsSlice = append(clientsSlice, k)
+		subscribers := topicClientMap[t.GetTopic()]
+		for _, clientId := range subscribers {
+			//对添加的clientId去重
+			if _, ok := clients[clientId]; !ok {
+				clients[clientId] = struct{}{}
+				clientsSlice = append(clientsSlice, clientId)
 			}
 		}
 	}
@@ -81,17 +61,11 @@ func Unsubscribe(topic string, clientId string) {
 	}
 	subscribeMu.Lock()
 	defer subscribeMu.Unlock()
-	if nodes, ok := clientTopicMap[clientId]; ok {
-		count := 0
-		for _, node := range nodes {
-			if node.topic == topic {
-				count++
-				delete(node.clients, clientId)
-			}
-		}
-		if count == len(nodes) {
-			delete(clientTopicMap, clientId)
-		}
+	hasSubscriber := unbindTopicAndClient(topic, clientId)
+	//如果某个topic已经没有订阅者了，则从字典树中删除
+	if !hasSubscriber {
+		parts := strings.Split(topic, consts.TOPIC_PART_SPLITTER)
+		subscribedTopics.Remove(parts)
 	}
 }
 
@@ -101,140 +75,58 @@ func UnsubscribeAll(clientId string) {
 	}
 	subscribeMu.Lock()
 	defer subscribeMu.Unlock()
-	if nodes, ok := clientTopicMap[clientId]; ok {
-		for _, node := range nodes {
-			delete(node.clients, clientId)
-		}
-		delete(clientTopicMap, clientId)
-	}
-}
-
-func ClearNoSubscriberTopic() {
-	subscribeMu.Lock()
-	defer subscribeMu.Unlock()
-	clearNoSubscriberTopic(subscribedTopics)
-}
-
-//递归清除没有被任何客户端订阅的空节点
-func clearNoSubscriberTopic(trie *TopicTrie) {
-	for _, child := range trie.children {
-		clearNoSubscriberTopic(child)
-	}
-	if len(trie.clients) == 0 {
-		trie.isEnded = false
-		if len(trie.children) == 0 && trie.parent != nil {
-			delete(trie.parent.children, trie.value)
-		}
-	}
-}
-
-//向某个节点添加topic
-func (trie *TopicTrie) insert(topicParts []string) *TopicTrie {
-	cur := trie
-	for _, part := range topicParts {
-		if cur.children == nil {
-			cur.children = make(map[string]*TopicTrie)
-		}
-		if cur.children[part] == nil {
-			cur.children[part] = &TopicTrie{parent: cur, level: cur.level + 1, value: part}
-		}
-		cur = cur.children[part]
-	}
-	cur.isEnded = true
-	return cur
-}
-
-//寻找树中与某个topic最接近的前缀节点
-func (trie *TopicTrie) searchPrefix(topicParts []string) *TopicTrie {
-	if len(topicParts) == 0 || trie.children == nil {
-		return trie
-	}
-	next := trie.children[topicParts[0]]
-	if next != nil {
-		if len(topicParts) > 1 {
-			return next.searchPrefix(topicParts[1:])
-		}
-		return next
-	}
-	return trie
-}
-
-//支持输入的topicParts带通配符或者不带通配符查找，支持字典树中的已有topic也使用通配符匹配
-func (trie *TopicTrie) searchUseWildcard(topicParts []string) []*TopicTrie {
-	var tries []*TopicTrie
-	part := topicParts[0]
-	if part == SINGLE_WILDCARD {
-		for _, child := range trie.children {
-			if len(topicParts) > 1 {
-				tries = append(tries, child.searchUseWildcard(topicParts[1:])...)
-			} else {
-				if child.isEnded {
-					tries = append(tries, child)
-				}
+	if topics, ok := clientTopicMap[clientId]; ok {
+		//复制一份数据，避免循环时对topic进行了修改后会导致index错乱
+		topicsCopy := make([]string, len(topics))
+		copy(topicsCopy, topics)
+		for _, topic := range topicsCopy {
+			hasSubscriber := unbindTopicAndClient(clientId, topic)
+			if !hasSubscriber {
+				parts := strings.Split(topic, consts.TOPIC_PART_SPLITTER)
+				subscribedTopics.Remove(parts)
 			}
 		}
-	} else if part == MULTI_WILDCARD {
-		for _, child := range trie.children {
-			if child.isEnded {
-				tries = append(tries, child)
-			}
-			tries = append(tries, child.searchUseWildcard([]string{MULTI_WILDCARD})...)
+	}
+}
+
+func bindTopicAndClient(clientId string, topic string) {
+	topics := clientTopicMap[clientId]
+	if topics == nil {
+		topics = make([]string, 0)
+	}
+	clientTopicMap[clientId] = append(topics, topic)
+	clients := topicClientMap[topic]
+	if clients == nil {
+		clients = make([]string, 0)
+	}
+	topicClientMap[topic] = append(clients, clientId)
+}
+
+func unbindTopicAndClient(clientId string, topic string) bool {
+	//该topic是否还有订阅者
+	var hasSubscriber bool = true
+	topics := clientTopicMap[clientId]
+	if topics != nil {
+		topics = removeString(topics, topic)
+		if len(topics) == 0 {
+			delete(clientTopicMap, clientId)
+		} else {
+			clientTopicMap[clientId] = topics
+		}
+	}
+	clients := topicClientMap[topic]
+	if clients != nil {
+		clients = removeString(clients, clientId)
+		if len(clients) == 0 {
+			delete(topicClientMap, topic)
+			hasSubscriber = false
+		} else {
+			topicClientMap[topic] = clients
 		}
 	} else {
-		exactlyNext := trie.children[part]
-		if exactlyNext != nil {
-			if len(topicParts) > 1 {
-				tries = append(tries, exactlyNext.searchUseWildcard(topicParts[1:])...)
-			} else {
-				if exactlyNext.isEnded {
-					tries = append(tries, exactlyNext)
-				}
-			}
-		}
-		//单层通配符处理
-		singleWildNext := trie.children[SINGLE_WILDCARD]
-		if singleWildNext != nil {
-			if len(topicParts) > 1 {
-				tries = append(tries, singleWildNext.searchUseWildcard(topicParts[1:])...)
-			} else {
-				if singleWildNext.isEnded {
-					tries = append(tries, singleWildNext)
-				}
-			}
-		}
-		//多层通配符处理
-		multiWildNext := trie.children[MULTI_WILDCARD]
-		if multiWildNext != nil {
-			if multiWildNext.isEnded {
-				tries = append(tries, multiWildNext)
-			}
-			if len(topicParts) > 1 {
-				tries = append(tries, multiWildNext.searchUseWildcard(topicParts[1:])...)
-			}
-		}
+		hasSubscriber = false
 	}
-	return tries
-}
-
-func (trie *TopicTrie) countTopic() int {
-	topicTotal := 0
-	if trie.isEnded {
-		topicTotal++
-	}
-	for _, child := range trie.children {
-		topicTotal += child.countTopic()
-	}
-	return topicTotal
-}
-
-func bindTrieAndClient(clientId string, topic string, trie *TopicTrie) {
-	trie.topic = topic
-	if trie.clients == nil {
-		trie.clients = make(map[string]interface{})
-	}
-	trie.clients[clientId] = struct{}{}
-	subTopics := clientTopicMap[clientId]
-	clientTopicMap[clientId] = append(subTopics, trie)
+	return hasSubscriber
 }
 
 func hasSubscribed(topic string, clientId string) bool {
@@ -242,10 +134,21 @@ func hasSubscribed(topic string, clientId string) bool {
 	if subTopics == nil {
 		return false
 	}
-	for _, trie := range subTopics {
-		if trie.topic == topic {
+	for _, subscribedTopic := range subTopics {
+		if subscribedTopic == topic {
 			return true
 		}
 	}
 	return false
+}
+
+func removeString(slice []string, s string) []string {
+	for i, str := range slice {
+		if str == s {
+			copy(slice[i:], slice[i+1:])
+			slice = slice[:len(slice)-1]
+			break
+		}
+	}
+	return slice
 }
