@@ -12,11 +12,38 @@ go get github.com/davidfantasy/embedded-mqtt-broker
 import mqtt "github.com/davidfantasy/embedded-mqtt-broker"
 
 func main() {
-	//构建配置信息
 	config := mqtt.NewServerOptions()
-	//创建broker并启动
 	broker := mqtt.NewMqttServer(config)
 	broker.Startup()
+}
+```
+## 权限控制
+现在mqtt broker可以指定接入客户端的访问控制权限，开发者可以自定义一个**security.AuthenticationProvider**，并根据接入客户端的验证信息返回不同的权限，包括对topic的publis和subcribe的权限。示例代码如下：
+```go
+import (
+	mqtt "github.com/davidfantasy/embedded-mqtt-broker"
+	"github.com/davidfantasy/embedded-mqtt-broker/security"
+)
+
+type CustomAuthManager struct {
+}
+
+func main() {
+	config := mqtt.NewServerOptions()
+	broker := mqtt.NewMqttServer(config)
+	//添加权限管理器
+	broker.SetAuthProvider(&CustomAuthManager{})
+	broker.Startup()
+}
+
+//自定义权限管理器，实现AuthenticationProvider接口
+func (manager *CustomAuthManager) Authenticate(username, password string) *security.Authentication {
+	if username == "admin" && password == "psw" {
+		return security.NewAuthentication([]security.Acl{{Topic: "admin/#", Access: security.CanSubPub}})
+	} else if username == "user" && password == "psw" {
+		return security.NewAuthentication([]security.Acl{{Topic: "user/#", Access: security.CanSubPub}})
+	}
+	return nil
 }
 ```
 ## 日志
@@ -34,8 +61,9 @@ func changeLogger() {
 }
 ~~~
 # 限制&未实现的特性
+
 1. 仅支持QOS为0的消息的收发
 2. 暂不支持保留消息（RETAIN）
-3. 暂不支持client的权限校验
+3. 暂不支持会话保持机制
 
 后续会不断完善相关功能
