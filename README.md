@@ -1,5 +1,8 @@
 # embedded-mqtt-broker
- go语言版本的mqtt轻量级服务器实现，支持MQTT 3.1.1协议，可嵌入到其它业务代码中。
+ go语言版本的mqtt轻量级服务器实现，开发者可以自由的在此基础上进行定制，实现更为复杂的业务功能。主要特性有：
+- 不依赖任何其它中间件，非常轻量； 
+- 可以灵活嵌入到其它任何go语言程序中；
+- 完整支持MQTT 3.1.1协议；
 
 # 使用方式
 
@@ -7,14 +10,29 @@
 ```
 go get github.com/davidfantasy/embedded-mqtt-broker
 ```
+
 ## 代码示例
 ```go
 import mqtt "github.com/davidfantasy/embedded-mqtt-broker"
 
 func main() {
-	config := mqtt.NewServerOptions()
+	config := config.NewDefaultConfig()
 	broker := mqtt.NewMqttServer(config)
 	broker.Startup()
+}
+
+```
+## 配置项
+```go
+func NewDefaultConfig() *ServerConfig {
+	return &ServerConfig{
+		//服务监听地址
+		Address: "0.0.0.0",
+		//服务监听端口
+		Port: 1883,
+		//默认的会话超时时间，客户端断联超过该时间后，其订阅信息及其它与会话绑定的消息都将被清除
+		SessionExpiryInterval: time.Hour * 2,
+	}
 }
 ```
 ## 权限控制
@@ -60,10 +78,9 @@ func changeLogger() {
 	logger.DEBUG = NOOPLogger{}
 }
 ~~~
-# 限制&未实现的特性
-
-1. 仅支持QOS为0的消息的收发
-2. 暂不支持保留消息（RETAIN）
-3. 暂不支持会话保持机制
+# todos
+1. 支持保留消息（RETAIN）
+2. 支持QOS大于0的消息的收发
+3. 性能测试和优化
 
 后续会不断完善相关功能
