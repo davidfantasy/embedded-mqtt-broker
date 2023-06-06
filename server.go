@@ -4,47 +4,36 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
-	"sync"
 	"time"
 
 	"github.com/davidfantasy/embedded-mqtt-broker/client"
+	"github.com/davidfantasy/embedded-mqtt-broker/config"
 	"github.com/davidfantasy/embedded-mqtt-broker/logger"
 	"github.com/davidfantasy/embedded-mqtt-broker/packets"
 	"github.com/davidfantasy/embedded-mqtt-broker/security"
 )
 
-var clientMap sync.Map
-
-type ServerOptions struct {
-	Address string
-	Port    int
-}
-
 type MqttServer struct {
-	opt                    *ServerOptions
+	config                 *config.ServerConfig
 	authenticationProvider security.AuthenticationProvider
 }
 
-func NewMqttServer(opt *ServerOptions) *MqttServer {
-	return &MqttServer{opt: opt}
+func NewMqttServer(config *config.ServerConfig) *MqttServer {
+	return &MqttServer{config: config}
 }
 
 func (server *MqttServer) SetAuthProvider(authProvider security.AuthenticationProvider) {
 	server.authenticationProvider = authProvider
 }
 
-func NewServerOptions() *ServerOptions {
-	return &ServerOptions{Address: "127.0.0.1", Port: 1883}
-}
-
 //启动mqtt broker
 func (s *MqttServer) Startup() {
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%v", s.opt.Address, s.opt.Port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%v", s.config.Address, s.config.Port))
 	if err != nil {
 		logger.ERROR.Println("mqtt server start failed:", err)
 		return
 	}
-	logger.INFO.Printf("Listening and serving mqtt on: %s:%v", s.opt.Address, s.opt.Port)
+	logger.INFO.Printf("Listening and serving mqtt on: %s:%v", s.config.Address, s.config.Port)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -64,21 +53,20 @@ func processNewConn(conn net.Conn, server *MqttServer) {
 		conn.Close()
 	}()
 	//mqtt connect handshake
-	client, err := acceptMqttConnect(conn, server)
+	c, err := acceptMqttConnect(conn, server)
 	if err != nil {
 		logger.ERROR.Println("mqtt connect err:", err)
 		conn.Close()
 	}
-	clientMap.Store(client.Id, client)
-	logger.DEBUG.Println("new client connected:", client.Id)
-	msgHandler := NewMessageHandler(client)
+	logger.DEBUG.Println("new client connected:", c.Id)
+	msgHandler := NewMessageHandler(c)
 	err = msgHandler.HandleMessage()
 	if err != nil {
 		logger.ERROR.Println("handle connection message err:", err)
 	}
 	//关闭消息处理器和客户端
 	msgHandler.close()
-	client.Disconnect()
+	client.CloseClient(c)
 }
 
 func acceptMqttConnect(conn net.Conn, server *MqttServer) (*client.Client, error) {
@@ -117,13 +105,18 @@ func acceptMqttConnect(conn net.Conn, server *MqttServer) (*client.Client, error
 		}
 	}
 	cap := packets.NewMqttPacket(packets.Connack).(*packets.ConnackPacket)
-	//TODO:暂不支持会话保持
-	cap.SessionPresent = false
 	cap.ReturnCode = returnCode
+	var c *client.Client
+	if cap.ReturnCode != packets.Accepted {
+		cap.SessionPresent = false
+	} else {
+		var sessionPresent bool
+		c, sessionPresent = client.NewClient(cp, conn, authentication, server.config)
+		cap.SessionPresent = sessionPresent
+	}
 	err = cap.Write(conn)
 	if err != nil {
 		return nil, err
 	}
-	client := client.NewClient(cp, conn, authentication)
-	return client, nil
+	return c, nil
 }

@@ -33,16 +33,15 @@ func (handler *MessageHandler) close() {
 func (handler *MessageHandler) doForward() {
 	go func() {
 		for packet := range handler.publishMsgChan {
+			//TODO 性能优化
 			subscribers := GetSubscriber(packet.TopicName)
-			for _, clientId := range subscribers {
-				subscriber, ok := clientMap.Load(clientId)
-				if !ok {
-					logger.WARN.Printf("没有找到订阅者对应的clientId [%s],无法投递消息", clientId)
-					continue
-				}
-				err := packet.Write(subscriber.(*client.Client).Conn)
-				if err != nil {
-					logger.WARN.Printf("投递消息时发生错误：clientId [%s],error: %s", clientId, err)
+			clients := client.FindClientsBySessionIds(subscribers)
+			for _, client := range clients {
+				if client != nil {
+					err := packet.Write(client.Conn)
+					if err != nil {
+						logger.WARN.Printf("投递消息时发生错误：clientId [%s],error: %s", client.Id, err)
+					}
 				}
 			}
 		}
@@ -105,7 +104,7 @@ func (handler *MessageHandler) handleSubscribe(packet *packets.SubscribePacket) 
 	suback.ReturnCodes = make([]byte, len(packet.Topics))
 	for i, topic := range packet.Topics {
 		if handler.client.CanSub(topic) {
-			Subscribe(topic, handler.client.Id)
+			Subscribe(topic, handler.client.SessionId)
 			//TODO 目前仅支持qos为0的订阅
 			suback.ReturnCodes[i] = 0x00
 		} else {
@@ -132,6 +131,6 @@ func (handler *MessageHandler) handlePing(packet *packets.PingreqPacket) error {
 
 func (handler *MessageHandler) handleDisconnect(packet *packets.DisconnectPacket) error {
 	logger.INFO.Printf("received a disconnect packet,client will be disconnect:%s", handler.client.Id)
-	handler.client.Disconnect()
+	client.CloseClient(handler.client)
 	return nil
 }
